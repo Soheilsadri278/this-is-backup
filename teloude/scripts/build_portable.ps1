@@ -104,10 +104,12 @@ $iconOk = (Test-Path (Join-Path $OutApp "assets\icon.ico")) -or
 if (-not $iconOk) { throw "portable build is missing assets\icon.ico" }
 
 if ($Zip) {
-    $zip = "dist\Teloude-Portable-$Version.zip"
-    Remove-Item -Force $zip -ErrorAction SilentlyContinue
-    Compress-Archive -Path (Join-Path $OutRoot "*") -DestinationPath $zip
-    Write-Host "Zip: $zip"
+    # NB: PowerShell variable names are case-insensitive, so this must NOT be called $zip -
+    # that would overwrite the [switch]$Zip parameter and throw ConvertToFinalInvalidCastException.
+    $zipPath = "dist\Teloude-Portable-$Version.zip"
+    Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+    Compress-Archive -Path (Join-Path $OutRoot "*") -DestinationPath $zipPath
+    Write-Host "Zip: $zipPath"
 }
 
 $py = if (Test-Path ".venv\Scripts\python.exe") { ".venv\Scripts\python.exe" } else { "python" }

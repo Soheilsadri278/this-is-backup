@@ -160,6 +160,20 @@ def test_a_source_checkout_finds_the_icon_next_to_the_app_package(monkeypatch):
     assert path.parent.name == "assets"
 
 
+def test_a_windowed_build_can_be_asked_for_its_version(monkeypatch):
+    """console=False builds have no sys.stdout, which is why --version used to print into nowhere."""
+    from app.__main__ import attach_standard_streams
+
+    before = (sys.stdout, sys.stderr)
+    attach_standard_streams()  # no-op wherever the streams already exist (any test run, any console)
+    assert (sys.stdout, sys.stderr) == before
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(sys, "platform", "linux")  # not Windows: nothing to attach, must not raise
+    attach_standard_streams()
+    assert sys.stdout is None
+
+
 def test_settings_prefer_environment_then_bundled_then_stored(tmp_path, monkeypatch):
     from app.application.settings import SettingsService
     from app.infrastructure.db import open_database
