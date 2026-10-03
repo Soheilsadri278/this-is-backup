@@ -29,9 +29,9 @@ def report():
 
 def test_identical_and_different_pictures_measure_apart(report):
     logo = Image.new("RGBA", (64, 64), (10, 20, 30, 255))
-    assert report.deviation(logo, logo.copy()) == 0.0
-    other = Image.new("RGBA", (64, 64), (240, 230, 220, 255))
-    assert report.deviation(other, logo) > report.TOLERANCE
+    deviation, tolerance = report.make_icon.deviation, report.make_icon.TOLERANCE
+    assert deviation(logo, logo.copy()) == 0.0
+    assert deviation(Image.new("RGBA", (64, 64), (240, 230, 220, 255)), logo) > tolerance
 
 
 def test_the_artwork_shipped_today_is_reported_as_consistent(report, capsys):

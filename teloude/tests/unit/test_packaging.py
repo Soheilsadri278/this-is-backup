@@ -149,6 +149,17 @@ def test_the_window_icon_uses_the_same_bundle_lookup(tmp_path, monkeypatch):
     assert resource_path("assets/icon.ico") == internal / "assets" / "icon.ico"
 
 
+def test_a_source_checkout_finds_the_icon_next_to_the_app_package(monkeypatch):
+    """Regression: the icon was looked for inside app/, so a source run painted a fallback icon."""
+    from app.presentation.icon import resource_path
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    path = resource_path("assets/icon.ico")  # building a QIcon needs a QApplication: see the ui tests
+    assert path is not None and path.is_file(), path
+    assert path.parent.name == "assets"
+
+
 def test_settings_prefer_environment_then_bundled_then_stored(tmp_path, monkeypatch):
     from app.application.settings import SettingsService
     from app.infrastructure.db import open_database

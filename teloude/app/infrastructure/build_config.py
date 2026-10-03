@@ -31,7 +31,8 @@ def bundle_roots() -> list[Path]:
     ``onedir`` builds keep everything but the EXE under ``_internal`` (which is ``sys._MEIPASS``),
     while some data files end up next to the EXE instead. Checking every plausible root keeps the
     app working in both layouts instead of silently losing its icon or its credentials. A source
-    checkout simply returns the project's ``app`` directory.
+    checkout returns the ``app`` directory and the project root, because that is where the two
+    bundled files live: ``app/teloude_api.json`` and ``assets/icon.ico``.
     """
     roots: list[Path] = []
     meipass = getattr(sys, "_MEIPASS", None)
@@ -42,7 +43,7 @@ def bundle_roots() -> list[Path]:
         exe_dir = Path(sys.executable).resolve().parent
         roots += [exe_dir, exe_dir / "_internal"]
     if not roots:
-        roots = [_SOURCE_ROOT]
+        roots = [_SOURCE_ROOT, _SOURCE_ROOT.parent]  # app/ holds the credentials, ../assets the icon
     seen: set[Path] = set()
     unique = []
     for r in roots:

@@ -18,14 +18,11 @@ import hashlib
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 UPSTREAM = ROOT.parent / "Logo&icon"
-# Mean 0..255 deviation that still counts as "the same picture" (downscaling and re-encoding of the
-# identical artwork measures around 1, a genuinely different logo measures in the tens).
-TOLERANCE = 8.0
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import make_icon  # noqa: E402  (scripts/ is a folder of executables, not an importable package)
@@ -36,27 +33,10 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
-def deviation(image: Image.Image, master: Image.Image) -> float:
-    """Mean per-channel difference (0..255) between ``image`` and ``master``, compared at the same size."""
-    box = (min(image.width, master.width), min(image.height, master.height))
-    left = image.convert("RGBA").resize(box, Image.LANCZOS)
-    right = master.convert("RGBA").resize(box, Image.LANCZOS)
-    raw = ImageChops.difference(left, right).tobytes()  # per-channel bytes of every pixel
-    return sum(raw) / len(raw) if raw else 0.0
-
-
 def icon_files() -> list[Path]:
     """Every icon in the checkout: the upstream artwork first, then what the build actually ships."""
     found = sorted(p for p in UPSTREAM.glob("*.png") if p.is_file()) if UPSTREAM.is_dir() else []
     return found + [p for p in (ASSETS / "logo.png", ASSETS / "icon.png", ASSETS / "icon.ico") if p.is_file()]
-
-
-def worst_deviation(path: Path, master: Image.Image) -> float:
-    """How far one file stray from the master; for an .ico, the worst of all its embedded sizes."""
-    with Image.open(path) as im:
-        if path.suffix.lower() != ".ico":
-            return deviation(im.convert("RGBA"), master)
-        return max(deviation(im.ico.getimage(size), master) for size in set(im.ico.sizes()))
 
 
 def display_size(path: Path) -> str:
@@ -72,7 +52,7 @@ def main() -> int:
     master, source = make_icon.master()
     rows: list[tuple[Path, str, float]] = []
     for path in icon_files():
-        rows.append((path, display_size(path), worst_deviation(path, master)))
+        rows.append((path, display_size(path), make_icon.worst_deviation(path, master)))
 
     print("master artwork:", source or "(none - painted fallback)")
     print(f"{'file':46s} {'size':>9s}  {'sha256':16s}  deviation")
@@ -80,7 +60,7 @@ def main() -> int:
         where = str(path.relative_to(ROOT.parent)) if path.is_relative_to(ROOT.parent) else str(path)
         print(f"{where:46s} {box:>9s}  {sha256(path):16s}  {delta:5.1f}")
 
-    stale = [(p, d) for p, _, d in rows if d > TOLERANCE]
+    stale = [(p, d) for p, _, d in rows if d > make_icon.TOLERANCE]
     if stale:
         print(f"\nSTALE: {len(stale)} file(s) do not show the master artwork (run scripts/make_icon.py):")
         for path, delta in stale:

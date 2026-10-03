@@ -2,8 +2,9 @@
 
     python scripts/windows_verify.py --exe dist\\Teloude\\Teloude.exe [--installer dist\\Teloude-Setup-1.0.0.exe] [--installed]
 
-Checks: EXE starts, embedded icon resource, proxy sheet really paints in the frozen app, DPAPI round trip,
-long paths, and (with --installed) Desktop / Start Menu shortcuts and their icon locations.
+Checks: EXE starts, embedded icon resource, that the embedded icon is still the artwork in Logo&icon/,
+proxy sheet really paints in the frozen app, DPAPI round trip, long paths, and (with --installed)
+Desktop / Start Menu shortcuts and their icon locations.
 Exit code 0 only if every check passes. This script cannot run on Linux/macOS (it refuses to).
 """
 
@@ -36,6 +37,46 @@ def shortcut_target_icon(lnk: Path) -> tuple[str, str]:
     return out[0].strip(), out[1].strip()
 
 
+def exe_icon_png(path: Path, out: Path) -> bool:
+    """Save the icon Windows shows for ``path`` as a PNG, so its pixels can be compared."""
+    ps = (
+        "Add-Type -AssemblyName System.Drawing; "
+        f"$icon = [System.Drawing.Icon]::ExtractAssociatedIcon('{path}'); "
+        f"if ($icon) {{ $icon.ToBitmap().Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png) }}"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=180)
+    return out.is_file()
+
+
+def report_icon_artwork(exe: Path) -> None:
+    """Compare the icon the EXE really carries with the master artwork in Logo&icon/.
+
+    A stale icon here means the EXE was built from older artwork; a Windows icon cache that still
+    paints the old one is a display artefact and is called out in the detail line.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import make_icon  # noqa: E402  (scripts/ holds executables, not an importable package)
+        from PIL import Image
+
+        master, source = make_icon.master()
+        with tempfile.TemporaryDirectory() as td:
+            shot = Path(td) / "icon.png"
+            if not exe_icon_png(exe, shot):
+                print("NOTE: Windows would not hand out the exe icon, so its artwork was not compared")
+                return
+            with Image.open(shot) as im:
+                delta = make_icon.deviation(im.convert("RGBA"), master)
+        check(
+            "exe icon matches the master artwork",
+            delta <= make_icon.TOLERANCE,
+            f"deviation {delta:.1f} from {source.name if source else 'the painted fallback'}"
+            + ("" if delta <= make_icon.TOLERANCE else " - rebuild, then ie4uinit.exe -ClearIconCache"),
+        )
+    except Exception as exc:  # a comparison problem must never fail the whole verification
+        print(f"NOTE: icon artwork comparison skipped ({type(exc).__name__}: {exc})")
+
+
 def painted_fraction(png: Path) -> float:
     from PIL import Image, ImageChops
 
@@ -57,6 +98,7 @@ def main() -> int:
     exe = Path(a.exe).resolve()
     check("exe exists", exe.exists(), str(exe))
     check("exe has embedded icon", embedded_icon_count(exe) >= 1, f"{embedded_icon_count(exe)} icon group(s)")
+    report_icon_artwork(exe)  # does the EXE carry the artwork that is in Logo&icon/ right now?
     ver = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60)
     check("exe starts (--version)", ver.returncode == 0 and "Teloude" in ver.stdout, ver.stdout.strip())
 

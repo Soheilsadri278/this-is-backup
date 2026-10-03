@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -221,3 +222,24 @@ def test_theme_applies_stylesheet_and_icon_loads(qapp):
     apply_theme(qapp, "light")
     assert not app_icon().isNull()
     assert Path("assets/icon.ico").exists()
+
+
+def test_window_icon_shows_the_master_artwork(qapp):
+    """The window, taskbar and tray must show Logo&icon/'s artwork, not the painted fallback."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import make_icon  # noqa: E402  (scripts/ holds executables, not an importable package)
+    from PIL import Image  # noqa: E402
+    from PySide6.QtGui import QImage  # noqa: E402
+
+    master, _source = make_icon.master()
+    image = app_icon().pixmap(64).toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    assert not image.isNull()
+    shown = Image.frombytes(
+        "RGBA",
+        (image.width(), image.height()),
+        bytes(image.constBits()),
+        "raw",
+        "RGBA",
+        image.bytesPerLine(),
+    )
+    assert make_icon.deviation(shown, master) <= make_icon.TOLERANCE

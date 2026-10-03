@@ -43,6 +43,26 @@ def main() -> int:
             check("icon carries every Windows size", False, type(exc).__name__)
     check("assets/icon.png exists (window + tray on every platform)", (ROOT / "assets" / "icon.png").is_file())
 
+    # Sizes alone do not prove the build ships the *current* logo, so compare the pixels against the
+    # artwork in Logo&icon/. This is the check that catches "I replaced the logo and nothing changed".
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import make_icon  # noqa: E402  (scripts/ holds executables, not an importable package)
+
+        master, source = make_icon.master()
+        worst = 0.0
+        for rel in ("assets/logo.png", "assets/icon.png", "assets/icon.ico"):
+            path = ROOT / rel
+            if path.is_file():
+                worst = max(worst, make_icon.worst_deviation(path, master))
+        check(
+            "every shipped icon shows the master artwork",
+            worst <= make_icon.TOLERANCE,
+            f"worst deviation {worst:.1f} from {source.name if source else 'the painted fallback'}",
+        )
+    except Exception as exc:  # pragma: no cover - Pillow is a hard dependency
+        check("every shipped icon shows the master artwork", False, type(exc).__name__)
+
     # ---------------------------------------------------------------- PyInstaller
     spec = (ROOT / "installer" / "teloude.spec").read_text(encoding="utf-8")
     check("spec embeds the icon into Teloude.exe", "icon=ICON" in spec and 'assets" / "icon.ico"' in spec)

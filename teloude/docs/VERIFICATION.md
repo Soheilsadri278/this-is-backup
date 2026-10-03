@@ -46,6 +46,43 @@ The per-part behaviour is pinned without any wall clock by
 * **Packaging:** `scripts/packaging_check.py` → 23/23. `scripts/portable_verify.py` → 9/9 on a portable tree in both
   PyInstaller layouts, and 7/9 + exit 1 when a `data/teloude.db` is planted (the negative test).
 
+## Branding: where every icon comes from
+
+One rule: **`Logo&icon/` is the only source of truth.** `scripts/make_icon.py` picks the highest-resolution
+PNG in that folder (mtime breaks a tie), normalises it to 256 px and writes `assets/logo.png`,
+`assets/icon.png` and `assets/icon.ico` (16/24/32/48/64/128/256, all embedded). The PyInstaller spec,
+the Inno Setup wizard, both shortcuts, the Qt window, the tray and the toasts all take their icon from
+those files, so replacing the artwork is a two-command job:
+
+```powershell
+# put the new PNG in Logo&icon\ (or overwrite icon-2.png), then:
+python scripts\make_icon.py     # prints which file it used
+python scripts\icon_report.py   # deviation 0.0 = carries it, exit 1 = still stale
+```
+
+`make_icon.py` used to look for `icon-2.png` by name, so artwork saved under any other name was silently
+ignored and the old icon was rebuilt every time — the "the icons never change" symptom.
+
+Enforced, not assumed:
+
+* `scripts/packaging_check.py` → *every shipped icon shows the master artwork*: compares the pixels of
+  `logo.png`, `icon.png` and every embedded `.ico` size against the master (worst deviation **0.0** today).
+* `tests/ui/test_app_ui.py::test_window_icon_shows_the_master_artwork` renders the real `QIcon` at 64 px
+  and compares it with the master artwork, so the window/taskbar/tray icon cannot fall back unnoticed.
+* `scripts/windows_verify.py` → *exe icon matches the master artwork*: asks Windows for the icon of the
+  built `Teloude.exe` and compares that too.
+
+**The EXE, Start Menu and Desktop icons only change after a rebuild**, and Windows caches icons per file
+path, so an old icon can survive a correct rebuild:
+
+```powershell
+powershell -File scripts\build_windows.ps1   # runs make_icon.py itself
+ie4uinit.exe -ClearIconCache                 # then restart Explorer
+```
+
+Running from source (`python -m app`) needs no rebuild: the window and tray read `assets/icon.ico`, and
+`SetCurrentProcessExplicitAppUserModelID` pins the taskbar entry to Teloude instead of python.exe.
+
 ## Not verified here (needs Windows and/or a Telegram account)
 * Building `Teloude.exe`, the Inno Setup installer, or the portable ZIP.
 * Reading the EXE's icon resource, taskbar grouping, tray icon, toasts.

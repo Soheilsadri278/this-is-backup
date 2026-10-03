@@ -100,6 +100,28 @@ def master() -> tuple[Image.Image, Path | None]:
     return img, source
 
 
+# Mean 0..255 deviation that still counts as "the same picture": downscaling or re-encoding the
+# identical artwork measures around 1, a genuinely different logo measures in the tens.
+TOLERANCE = 8.0
+
+
+def deviation(image: Image.Image, master: Image.Image) -> float:
+    """Mean per-channel difference (0..255) between ``image`` and ``master``, compared at one size."""
+    box = (min(image.width, master.width), min(image.height, master.height))
+    left = image.convert("RGBA").resize(box, Image.LANCZOS)
+    right = master.convert("RGBA").resize(box, Image.LANCZOS)
+    raw = ImageChops.difference(left, right).tobytes()  # every channel of every pixel
+    return sum(raw) / len(raw) if raw else 0.0
+
+
+def worst_deviation(path: Path, master: Image.Image) -> float:
+    """How far one icon file stray from the master; for an .ico, the worst of its embedded sizes."""
+    with Image.open(path) as im:
+        if path.suffix.lower() != ".ico":
+            return deviation(im.convert("RGBA"), master)
+        return max(deviation(im.ico.getimage(size), master) for size in set(im.ico.sizes()))
+
+
 def differs(image: Image.Image, path: Path) -> bool:
     """True when ``path`` is missing, unreadable, or does not hold exactly these pixels."""
     if not path.is_file():
