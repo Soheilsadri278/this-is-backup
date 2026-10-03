@@ -7,13 +7,51 @@ bundled credentials file so the real code paths run on any platform.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from app.infrastructure import build_config
 from app.infrastructure.config import PORTABLE_MARKER, app_paths, default_data_dir, portable_root
 from app.infrastructure.windows_appid import APP_USER_MODEL_ID, set_app_user_model_id
+
+
+def _source_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def test_the_bundle_boots_the_app_package_and_not_a_bare_main_module():
+    """Regression: the packaged app died at start-up with
+    ``ImportError: attempted relative import with no known parent package``.
+
+    ``app/__main__.py`` imports relatively (``from .infrastructure...``). Run as PyInstaller's entry
+    script it becomes the top-level ``__main__`` module, which has no package, so every one of those
+    imports raises - and PyInstaller cannot follow them either, so it collects no app modules at all.
+    The build looked fine and the EXE could never start, which is exactly the kind of fault the
+    packaging checks exist to catch.
+    """
+    root = _source_root()
+    spec = (root / "installer" / "teloude.spec").read_text(encoding="utf-8")
+    entry = re.search(r"Analysis\(.*?\[(.*?)\]", spec, re.S)  # the script list, comments included
+    assert entry, "could not find the entry script in installer/teloude.spec"
+    assert "__main__.py" not in entry.group(1), (
+        "the PyInstaller entry script must not be app/__main__.py: as a bare __main__ module its "
+        "relative imports fail at start-up"
+    )
+    assert "entry.py" in entry.group(1)
+    assert "pathex=[str(ROOT)]" in spec, "`import app` has to resolve to the real package"
+    bootstrap = (root / "installer" / "entry.py").read_text(encoding="utf-8")
+    assert "from app.__main__ import main" in bootstrap
+    # And it has to work: the entry script is what the frozen EXE runs, so prove it starts.
+    run = subprocess.run(
+        [sys.executable, str(root / "installer" / "entry.py"), "--version"],
+        cwd=str(root), capture_output=True, text=True, timeout=120,
+    )
+    assert run.returncode == 0, run.stderr
+    assert "Teloude" in run.stdout, run.stdout
 
 
 @pytest.fixture
