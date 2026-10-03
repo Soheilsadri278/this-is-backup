@@ -1,21 +1,23 @@
 """Generate ``assets/icon.ico`` (16..256 px, all embedded) and ``assets/icon.png``.
 
-The user's own branding is authoritative: ``assets/logo.png`` (a copy of ``Logo&icon/icon-2.png``)
-is used whenever it is present, so the packaged EXE, the installer, the shortcuts and the Qt window
-all show exactly the same artwork. The painted gradient below is only a last-resort fallback for a
-checkout that somehow lost ``assets/logo.png``; it is never used to override the real logo.
+The user's own branding is authoritative: the highest-resolution artwork in ``Logo&icon/`` (today
+``icon-2.png``) becomes ``assets/logo.png``, so the packaged EXE, the installer, the shortcuts and
+the Qt window all show exactly the same artwork. The painted gradient below is only a last-resort
+fallback for a checkout with no artwork at all; it is never used to override the real logo.
+
+Run ``scripts/icon_report.py`` to see whether every icon currently carries that master artwork.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 # Where the user's original artwork lives. ``assets/logo.png`` is the in-project copy used by builds;
 # the repository-level ``Logo&icon/`` folder is the upstream source it was taken from.
-SOURCES = (ASSETS / "logo.png", ROOT.parent / "Logo&icon" / "icon-2.png", ROOT.parent / "Logo&icon" / "icon.png")
+UPSTREAM = ROOT.parent / "Logo&icon"
 SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 SIZE = 1024
 
@@ -43,37 +45,50 @@ def build() -> Image.Image:
 
 
 def candidates() -> list[Path]:
-    """Every artwork file that could be the master, best-known names first.
+    """Every artwork file in ``Logo&icon/``, best-known names first.
 
     ``Logo&icon/`` may hold small preview renders (a 32x32 EXE preview, an installer preview) next
     to the real logo, so a name-based lookup alone can silently keep using an old file. Any PNG in
-    that folder is accepted and the highest-resolution one wins below.
+    that folder is accepted and the highest-resolution one wins in :func:`master`.
     """
-    folder = ROOT.parent / "Logo&icon"
-    upstream: list[Path] = []
-    if folder.is_dir():
-        named = [folder / n for n in ("icon-2.png", "icon.png", "logo.png")]
-        upstream += [p for p in named if p.is_file()]
-        upstream += sorted(
-            (p for p in folder.glob("*.png") if p not in named), key=lambda p: p.stat().st_size, reverse=True
-        )
-    return [ASSETS / "logo.png", *upstream]
+    if not UPSTREAM.is_dir():
+        return []
+    named = [UPSTREAM / n for n in ("icon-2.png", "icon.png", "logo.png")]
+    others = sorted(
+        (p for p in UPSTREAM.glob("*.png") if p not in named), key=lambda p: p.stat().st_size, reverse=True
+    )
+    return [p for p in named if p.is_file()] + others
+
+
+def score(path: Path) -> tuple[int, float] | None:
+    """``(pixels, mtime)`` of a readable image, or ``None`` for anything that is not one.
+
+    Resolution decides the master; the modification time only breaks a tie, so artwork the user
+    drops into ``Logo&icon/`` beats an equally large file that was already there.
+    """
+    try:
+        with Image.open(path) as im:
+            pixels = im.size[0] * im.size[1]
+    except (OSError, ValueError):  # not an image PIL can read
+        return None
+    return pixels, path.stat().st_mtime
 
 
 def master() -> tuple[Image.Image, Path | None]:
-    """The highest-resolution artwork available: the real logo beats the small preview renders."""
-    best: tuple[int, int, Path] | None = None
+    """The highest-resolution artwork available: the real logo beats the small preview renders.
+
+    ``Logo&icon/`` is authoritative, so ``assets/logo.png`` - the copy this script wrote on an
+    earlier run - is only used when there is no upstream artwork or it is the higher-resolution file.
+    """
+    best: tuple[int, float, Path] | None = None
     for candidate in candidates():
-        if not candidate.is_file():
-            continue
-        try:
-            with Image.open(candidate) as im:
-                size = im.size
-        except OSError:  # not a readable image
-            continue
-        score = (size[0] * size[1], candidate.stat().st_size)
-        if best is None or score > (best[0], best[1]):
-            best = (score[0], score[1], candidate)
+        found = score(candidate)
+        if found is not None and (best is None or found > (best[0], best[1])):
+            best = (*found, candidate)
+    copy = ASSETS / "logo.png"
+    found = score(copy) if copy.is_file() else None
+    if found is not None and (best is None or found[0] > best[0]):
+        best = (*found, copy)
     if best is None:
         return build(), None
     source = best[2]
@@ -85,14 +100,27 @@ def master() -> tuple[Image.Image, Path | None]:
     return img, source
 
 
+def differs(image: Image.Image, path: Path) -> bool:
+    """True when ``path`` is missing, unreadable, or does not hold exactly these pixels."""
+    if not path.is_file():
+        return True
+    try:
+        with Image.open(path) as im:
+            return im.size != image.size or ImageChops.difference(im.convert("RGBA"), image).getbbox() is not None
+    except (OSError, ValueError):
+        return True
+
+
 def main() -> None:
     ASSETS.mkdir(exist_ok=True)
     img, source = master()
-    img.save(ASSETS / "icon.png")
-    img.save(ASSETS / "icon.ico", sizes=SIZES)
-    if source is not None and source.resolve() != (ASSETS / "logo.png").resolve():
-        img.save(ASSETS / "logo.png")  # the checked-in copy the build uses, so builds reproduce
-        print("updated", ASSETS / "logo.png", "from", source)
+    if differs(img, ASSETS / "icon.png"):
+        img.save(ASSETS / "icon.png")
+    img.save(ASSETS / "icon.ico", sizes=SIZES)  # the file PyInstaller and the installer embed
+    copy = ASSETS / "logo.png"  # the checked-in copy builds fall back on when Logo&icon/ is absent
+    if source is not None and source.resolve() != copy.resolve() and differs(img, copy):
+        img.save(copy)
+        print("updated", copy, "from", source)
     print("wrote", ASSETS / "icon.ico", f"({', '.join(f'{w}x{h}' for w, h in SIZES)})", "from", source or "built-in fallback artwork")
 
 
