@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Teloude runtime data (never commit a database, a log or a secret)
+data/
+*.db
+*.dpapi
+*.insecure
+logs/
+
+# Credentials injected at build time
+teloude/app/teloude_api.json

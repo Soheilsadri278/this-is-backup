@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teloude — Windows test fixes</title>
+<style>
+  body { font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 40px;
+         background: #f6f7f9; color: #1c1e21; }
+  .wrap { max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e3e6ea;
+          border-radius: 12px; padding: 32px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  p.sub { margin: 0 0 24px; color: #5b6270; }
+  a.file { display: block; padding: 16px 18px; margin-bottom: 12px; border: 1px solid #d7dbe1;
+           border-radius: 10px; text-decoration: none; color: #1c1e21; background: #fbfcfd; }
+  a.file:hover { border-color: #4f7df0; background: #f2f6ff; }
+  a.file strong { display: block; font-size: 16px; }
+  a.file span { color: #5b6270; font-size: 13px; }
+  code { background: #eef0f3; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  ol { padding-left: 20px; }
+  li { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Teloude — fixes for the 3 Windows test failures</h1>
+  <p class="sub">Apply to your project root, then run <code>pytest -q</code> (expect 133 passed, 1 skipped).</p>
+
+  <a class="file" href="teloude-windows-fix-files.zip" download>
+    <strong>teloude-windows-fix-files.zip</strong>
+    <span>17.9 KB — 5 files, unzip straight over your project root (recommended)</span>
+  </a>
+  <a class="file" href="teloude-windows-test-fixes.patch" download>
+    <strong>teloude-windows-test-fixes.patch</strong>
+    <span>14.8 KB — the same change as a unified diff: <code>patch -p1 &lt; teloude-windows-test-fixes.patch</code></span>
+  </a>
+
+  <h3>What is inside</h3>
+  <ol>
+    <li><code>tests/integration/test_backup.py</code> — <code>tree()</code> keys now use <code>as_posix()</code> (fixes failures 1 and 2)</li>
+    <li><code>app/domain/ratelimit.py</code> — the limiter coalesces micro-sleeps (fixes failure 3: 4.0 s → 0.66 s)</li>
+    <li><code>app/testing/fake_gateway.py</code> — always yields; deterministic per-call fault-injection number</li>
+    <li><code>tests/transfer/test_pipeline.py</code> — speed-limit test no longer measures the OS clock</li>
+    <li><code>tests/unit/test_domain.py</code> — new coarse-clock and average-rate regression tests</li>
+  </ol>
+</div>
+</body>
+</html>

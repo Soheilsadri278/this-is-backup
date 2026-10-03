@@ -1,0 +1,306 @@
+# Teloude - fixes for the 3 Windows test failures (3 failed / 126 passed / 1 skipped).
+#
+# Generated against the ORIGINAL project in teloude-v1-development-prompt.zip, so it applies
+# to a copy that still has the original content of these five files.
+#   apply:  git apply -p1 teloude-windows-test-fixes.patch     (or patch -p1 < ...) 
+#   or:     just copy the five files below over your project.
+#
+# 1. tests/integration/test_backup.py  tree() keys: str(Path) -> as_posix()  (failures 1 + 2)
+# 2. app/domain/ratelimit.py           coalesce micro-sleeps                  (failure 3)
+# 3. app/testing/fake_gateway.py       always yield; per-call fault number    (failure 3)
+# 4. tests/transfer/test_pipeline.py   speed-limit test: instant transport    (failure 3)
+# 5. tests/unit/test_domain.py         coarse-clock + average-rate regressions (new)
+--- a/app/domain/ratelimit.py
++++ b/app/domain/ratelimit.py
+@@ -7,6 +7,16 @@
+   uploaders therefore share one global budget **without being serialised** behind a lock or a
+   blocking ``time.sleep``.
+ * ``rate=None`` means unlimited: ``acquire`` returns without awaiting anything.
++* **Sleeps are coalesced.** A 1 KiB part at 1 MiB/s is worth 1 ms of waiting. Sleeping for 1 ms is
++  worse than not sleeping at all: the timer granularity of the Windows event loop (~15.6 ms) turns
++  every one of those sleeps into a full tick, which slowed a 512 KiB / 1 MiB/s upload from 0.5 s to
++  4.0 s (512 parts -> 512 sleeps -> 8 s of tick-rounded napping). Below ``min_sleep`` the bytes are
++  simply *borrowed*: ``_tokens`` stays negative, a later caller (or this one, once the debt is worth
++  waking up for) sleeps for the whole backlog, and the long-run average rate is unchanged. The most
++  a transfer can run ahead of schedule is ``rate * min_sleep`` bytes - 20 ms worth by default.
++* ``total_throttled_seconds`` counts *wall-clock seconds during which the bucket owed bytes*, not
++  the sum of every caller's individual wait: four workers sleeping for the same 100 ms are 100 ms
++  of throttling, not 400 ms.
+ """
+ 
+ from __future__ import annotations
+@@ -17,16 +27,21 @@
+ 
+ 
+ class TokenBucket:
++    #: Windows' monotonic clock ticks every ~15.6 ms; anything shorter is not worth a wake-up.
++    MIN_SLEEP = 0.02
++
+     def __init__(
+         self,
+         rate: float | None,
+         burst_seconds: float = 0.5,
+         clock: Callable[[], float] = time.monotonic,
+         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
++        min_sleep: float = MIN_SLEEP,
+     ):
+         self._clock = clock
+         self._sleep = sleep
+         self._burst_seconds = burst_seconds
++        self._min_sleep = max(0.0, min_sleep)
+         self._rate: float | None = None
+         self._capacity = 0.0
+         self._tokens = 0.0
+@@ -54,9 +69,15 @@
+ 
+     def _refill(self) -> None:
+         now = self._clock()
+-        if self._rate is not None:
+-            self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._rate)
++        delta = now - self._last
+         self._last = now
++        if self._rate is None or delta <= 0:
++            return
++        if self._tokens < 0:
++            # Time the bucket spent in debt - capped at what it actually takes to repay it, so an
++            # idle bucket that is merely behind does not book minutes of nobody-waiting time.
++            self.total_throttled_seconds += min(delta, -self._tokens / self._rate)
++        self._tokens = min(self._capacity, self._tokens + delta * self._rate)
+ 
+     async def acquire(self, nbytes: int) -> float:
+         """Wait until ``nbytes`` may be sent. Returns the seconds this caller waited."""
+@@ -67,7 +88,8 @@
+         if self._tokens >= 0:
+             return 0.0
+         wait = -self._tokens / self._rate
+-        self.total_throttled_seconds += wait
++        if wait < self._min_sleep:
++            return 0.0  # borrowed, not waited: see the module docstring
+         try:
+             await self._sleep(wait)
+         except asyncio.CancelledError:
+--- a/app/testing/fake_gateway.py
++++ b/app/testing/fake_gateway.py
+@@ -86,9 +86,15 @@
+         self.crash_after_finalize = False
+ 
+     # -- helpers ----------------------------------------------------------------------------
+-    def _maybe_fail(self, op: str) -> None:
++    def _maybe_fail(self, op: str, call_no: int | None = None) -> None:
++        """``call_no`` is this call's own 1-based number, captured when the call started.
++
++        Reading ``self.part_calls`` here instead would make fault injection depend on how the
++        workers happen to interleave: four of them can bump the counter between a call starting and
++        its hook running, so "fail on the 15th part" would silently never fire.
++        """
+         if self.fail_hook:
+-            exc = self.fail_hook(op, self.part_calls)
++            exc = self.fail_hook(op, self.part_calls if call_no is None else call_no)
+             if exc is not None:
+                 raise exc
+ 
+@@ -182,14 +188,27 @@
+         self.sessions[fid] = {}
+         return UploadSession(fid, name)
+ 
++    async def validate_upload_session(self, session: UploadSession) -> bool:
++        """Faithful model of the server-side session table.
++
++        MTProto has no cheap "do you still know this file id?" query, so real adapters can only
++        check connectivity. The fake *can* answer exactly, which is what lets the tests exercise
++        the expired-session resume path end to end.
++        """
++        self._maybe_fail("validate_session")
++        return session.file_id in self.sessions
++
+     async def upload_part(self, session: UploadSession, index: int, total_parts: int, data: bytes) -> None:
+         self.part_calls += 1
++        call_no = self.part_calls  # this call's own number: other workers must not change it
+         self.inflight += 1
+         self.max_inflight = max(self.max_inflight, self.inflight)
+         try:
+-            if self.part_latency:
+-                await asyncio.sleep(self.part_latency)  # failures surface after a round trip, like a real network
+-            self._maybe_fail("upload_part")
++            # Always yield: a network call always hands control back to the event loop, even one
++            # that completes instantly. With part_latency == 0 this is what keeps the parts of
++            # concurrent workers genuinely overlapping (max_inflight > 1).
++            await asyncio.sleep(self.part_latency)
++            self._maybe_fail("upload_part", call_no)
+             if not self.connected:
+                 raise TransientNetworkError("not connected")
+             if session.file_id not in self.sessions:
+--- a/tests/integration/test_backup.py
++++ b/tests/integration/test_backup.py
+@@ -15,7 +15,26 @@
+ 
+ 
+ def tree(root) -> dict[str, bytes]:
+-    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
++    """Local files, keyed by their path relative to ``root`` with '/' separators.
++
++    ``as_posix()`` (not ``str()``) because these keys are compared with the logical paths Teloude
++    stores and uploads, which are always '/'-separated - on Windows ``str(Path)`` would produce
++    backslashes and silently stop matching.
++    """
++    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
++
++
++async def test_tree_helper_keys_are_always_posix(env: Env):
++    """``tree()`` keys are compared with logical paths, which are always '/'-separated.
++
++    ``str(Path(...))`` would produce backslashes on Windows and silently stop matching, so this
++    pins the helper to ``as_posix()`` (and to never containing a backslash) on every platform.
++    """
++    env.write("a/b/c.txt", b"x")
++    env.write("top.txt", b"y")
++    keys = set(tree(env.src))
++    assert keys == {"a/b/c.txt", "top.txt"}
++    assert not any("\\" in k for k in keys)
+ 
+ 
+ async def test_backup_end_to_end_hierarchy_mapping_and_content(env: Env):
+@@ -40,6 +59,25 @@
+     assert tree(env.src) == before  # local files untouched
+ 
+ 
++async def test_logical_paths_in_the_index_captions_and_topics_are_posix(env: Env):
++    """A Windows path separator must never leak into the DB, a caption or a topic title.
++
++    Logical paths are the identity of a backed-up file: if they contained '\\' on Windows and '/'
++    on Linux, the same storage restored on the other platform would not recognise its own files.
++    """
++    env.write("Portraits/2026/p1.jpg", b"x" * 100)
++    env.write("Portraits/2025/p0.jpg", b"y" * 100)
++    sid = await env.new_storage()
++    await env.backup.run(sid, str(env.src), never_duplicate)
++
++    rel_paths = sorted(r["rel_path"] for r in env.repos.files.list_backed_up(sid))
++    assert rel_paths == ["Photography/Portraits/2025/p0.jpg", "Photography/Portraits/2026/p1.jpg"]
++    for m in env.gateway.all_messages():
++        assert "\\" not in decode_caption(m.caption).rel_path
++    chat = next(iter(env.gateway.chats.values()))
++    assert all("\\" not in title for title in chat.topics.values())
++
++
+ async def test_second_run_is_a_noop_and_touch_only_does_not_reupload(env: Env):
+     p = env.write("a.bin", b"x" * 3000)
+     sid = await env.new_storage()
+@@ -181,15 +219,22 @@
+     s = await env.backup.run(sid, str(env.src), never_duplicate)
+     assert s.outcome == RunOutcome.FAILED and "unreachable" in " ".join(s.errors)
+     t = env.db.query_one("SELECT * FROM transfers")
+-    assert t["state"] == TransferState.FAILED and t["completed_parts"] and t["tg_file_id"]
++    # A temporary failure must NOT collapse into a dead end: it is recorded as recoverable and the
++    # checkpoint (session id + acknowledged parts) is kept so Resume can continue from it.
++    assert t["state"] == TransferState.RECOVERABLE_FAILED and t["completed_parts"] and t["tg_file_id"]
++    assert s.recoverable == 1 and s.permanent == 0 and s.resumable
++    assert env.db.scalar("SELECT state FROM files") == FileState.FAILED
+     sent_before = len(env.gateway.sessions[t["tg_file_id"]])
+     assert 0 < sent_before < 40
++    summary = env.resume_service.summary(sid)
++    assert summary.resumable and summary.done_bytes == sent_before * 1024
+     env.gateway.fail_hook = None  # network is back
+     calls = env.gateway.part_calls
+     s2 = await env.backup.run(sid, str(env.src), never_duplicate)
+     assert s2.outcome == RunOutcome.COMPLETED
+     assert env.gateway.part_calls - calls == 40 - sent_before  # NOT restarted from zero
+     assert env.gateway.all_messages()[0].data == data
++    assert not env.resume_service.summary(sid).resumable  # nothing left to resume
+ 
+ 
+ async def test_session_expired_at_finalize_restarts_with_new_session(env: Env):
+--- a/tests/transfer/test_pipeline.py
++++ b/tests/transfer/test_pipeline.py
+@@ -246,11 +246,17 @@
+     control = TransferControl()
+     completed = RangeSet()
+     session = gw.new_upload_session("f.bin")
+-    task = asyncio.create_task(run_volume(gw, path, data, control=control, session=session, completed=completed))
+-    await asyncio.sleep(0.08)
+-    control.cancel()
++    # Cancel deterministically once a fixed number of parts were safely recorded, instead of racing
++    # a wall-clock sleep (on a fast/loaded machine all 30 parts could finish before the cancel).
++    def cancel_after_twelve(op: str, n: int) -> Exception | None:
++        if op == "upload_part" and len(completed) >= 12:
++            control.cancel()
++        return None
++
++    gw.fail_hook = cancel_after_twelve
+     with pytest.raises(TransferCancelled):
+-        await task
++        await run_volume(gw, path, data, control=control, session=session, completed=completed)
++    gw.fail_hook = None
+     done_before = len(completed)
+     calls_before = gw.part_calls
+     assert 0 < done_before < 30
+@@ -290,7 +296,13 @@
+ 
+ # ------------------------------------------------------------------ speed limiter in the pipeline
+ async def test_speed_limit_applies_without_destroying_concurrency(tmp_path):
+-    gw = FakeGateway(part_latency=0.002)
++    # 512 KiB in 512 parts at 1 MiB/s -> ~0.5 s of throttling, no matter how fast the transport is.
++    # The fake transport deliberately has no latency of its own here: on a platform whose event-loop
++    # clock only ticks every ~15.6 ms (Windows) every simulated round trip costs a whole tick, so
++    # 512 of them would add ~2 s of pure clock artefact and the test would measure the OS instead of
++    # the limiter. Per-part behaviour with a coarse clock is pinned exactly - no wall clock involved
++    # - by test_limiter_coalesces_micro_sleeps_on_a_coarse_clock.
++    gw = FakeGateway()
+     path, data = make_file(tmp_path, 512)  # 512 KiB
+     limiter = TokenBucket(1024 * 1024, burst_seconds=0)  # 1 MiB/s -> ~0.5 s
+     t0 = time.monotonic()
+--- a/tests/unit/test_domain.py
++++ b/tests/unit/test_domain.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import math
+ import time
+ 
+ import pytest
+@@ -59,6 +60,44 @@
+     assert ticks >= 15  # the event loop stayed responsive while throttled
+ 
+ 
++async def test_limiter_coalesces_micro_sleeps_on_a_coarse_clock():
++    """Regression: one sleep per part turned 0.5 s of throttling into 4 s.
++
++    The pipeline asks the limiter for every 1 KiB part. On Windows the event loop's monotonic clock
++    only advances in ~15.6 ms steps, so every one of those 512 sub-millisecond sleeps cost a whole
++    tick: a 512 KiB / 1 MiB/s upload (0.5 s of budget) took 4.0 s. The limiter must bank short
++    waits instead of sleeping for them. This runs on a virtual coarse clock, so it is exact and
++    independent of the machine's real timer.
++    """
++    t = [0.0]
++    tick = 15.625e-3  # the Windows default timer granularity
++    sleeps = [0]
++
++    async def sleep(d):
++        sleeps[0] += 1
++        t[0] += math.ceil(d / tick) * tick  # a coarse timer: only whole ticks
++
++    tb = TokenBucket(1024 * 1024, burst_seconds=0, clock=lambda: t[0], sleep=sleep)
++    for _ in range(512):  # 512 KiB, one 1 KiB part at a time, like the pipeline does
++        await tb.acquire(1024)
++
++    assert sleeps[0] <= 64, f"{sleeps[0]} sleeps for 512 parts: the limiter sleeps once per part"
++    assert 0.4 <= t[0] <= 0.75, f"512 KiB at 1 MiB/s took {t[0]:.2f}s of throttling"
++
++
++async def test_limiter_still_enforces_the_rate_with_coalescing():
++    """Coalescing must not turn into 'never sleep': the global average is still the limit."""
++    t = [0.0]
++
++    async def sleep(d):
++        t[0] += d
++
++    tb = TokenBucket(1000, burst_seconds=0, clock=lambda: t[0], sleep=sleep)
++    for _ in range(10):
++        await tb.acquire(500)
++    assert t[0] == pytest.approx(5.0, rel=0.01)  # 5000 bytes at 1000 B/s
++
++
+ async def test_limiter_set_rate_and_validation():
+     tb = TokenBucket(100)
+     tb.set_rate(None)
