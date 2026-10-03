@@ -27,11 +27,32 @@ if (Test-Path ".\app\teloude_api.json") {
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 .\.venv\Scripts\pyinstaller installer\teloude.spec --noconfirm
 
+# A session started before Inno Setup was installed does not have it on PATH yet, so re-read PATH.
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+            [Environment]::GetEnvironmentVariable("Path", "User")
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
-if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-if (-not (Test-Path $iscc)) {
-    throw "Inno Setup 6 not found (iscc.exe). Install it with:  winget install -e --id JRSoftware.InnoSetup"
+if (-not $iscc) {  # not on PATH: look where Inno Setup actually installs, and ask the registry
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe",
+        "${env:ProgramFiles}\Inno Setup 5\ISCC.exe"
+    )
+    foreach ($key in @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+                       "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+                       "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1")) {
+        $dir = (Get-ItemProperty $key -ErrorAction SilentlyContinue).InstallLocation
+        if ($dir) { $candidates += (Join-Path $dir "ISCC.exe") }
+    }
+    foreach ($candidate in $candidates) {
+        if (-not $iscc -and (Test-Path $candidate)) { $iscc = $candidate }
+    }
 }
+if (-not $iscc) {
+    throw "Inno Setup 6 not found (iscc.exe). Install it with:  winget install -e --id JRSoftware.InnoSetup" +
+          "`nIf it is already installed, run iscc.exe /? once, or open a new PowerShell window and retry."
+}
+Write-Host "Inno Setup: $iscc"
 & $iscc installer\teloude.iss
 
 .\.venv\Scripts\python scripts\windows_verify.py --exe dist\Teloude\Teloude.exe --installer dist\Teloude-Setup-1.0.0.exe
