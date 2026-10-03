@@ -64,18 +64,24 @@ def test_explicit_data_dir_wins_over_portable(frozen, monkeypatch):
 
 
 def test_portable_mode_does_not_touch_the_secret_store_contract(frozen, monkeypatch):
-    """Portability is about binaries, not about downgrading encryption."""
+    """Portability is about binaries, not about downgrading encryption.
+
+    The secret is long on purpose: a single byte ('v') shows up inside ~200 bytes of ciphertext by
+    pure chance about half the time, which made this assert on luck instead of on DPAPI.
+    """
     from app.infrastructure.secrets import create_secret_store
 
+    secret = "teloude-portable-secret-7c1f9a2e"  # 33 chars: cannot appear in a blob by accident
     (frozen / PORTABLE_MARKER).write_text("mode=portable", encoding="utf-8")
     monkeypatch.delenv("TELOUDE_DATA_DIR", raising=False)
     store = create_secret_store(app_paths().secrets)
-    store.set("k", "v")
+    store.set("api_hash", secret)
     if sys.platform != "win32":  # on Windows this is DPAPI: the file must be unreadable
-        assert store.get("k") is None or True  # in-memory store: nothing is written at all
+        assert store.get("api_hash") is None or True  # in-memory store: nothing is written at all
     else:
-        raw = (app_paths().secrets / "k.dpapi").read_bytes()
-        assert b"v" not in raw
+        raw = (app_paths().secrets / "api_hash.dpapi").read_bytes()
+        assert secret.encode() not in raw  # DPAPI ciphertext, not plaintext
+        assert store.get("api_hash") == secret  # ...and it still round-trips for this user only
 
 
 # ------------------------------------------------------------------ bundled API credentials

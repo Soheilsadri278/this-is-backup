@@ -662,12 +662,30 @@ def form_row(label: str, *widgets: QWidget, label_w: int = LABEL_W, grow: bool =
     lab = QLabel(label)
     lab.setMinimumWidth(label_w)
     lab.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+    lab.setProperty("form_label", True)  # align_form_labels() gives the whole column one width
     row.addWidget(lab)
     for i, w in enumerate(widgets):
         row.addWidget(w, 1 if (grow and i == len(widgets) - 1) else 0, Qt.AlignmentFlag.AlignVCenter)
     if not grow:
         row.addStretch(1)
     return row
+
+
+def align_form_labels(page: QWidget, pad: int = 8) -> None:
+    """Give every ``form_row`` label the same width - the width of the widest one.
+
+    ``setMinimumWidth(LABEL_W)`` alone is not enough: on a machine whose font is wider than
+    LABEL_W (a larger UI font, a high-DPI screen, Segoe UI instead of the Linux default) the labels
+    grow to their own text width and the controls of each card start at a different x, so the form
+    looks ragged. Measuring the widest label with the *actual* font keeps the column aligned - and
+    never elides text - on every platform.
+    """
+    labels = [w for w in page.findChildren(QLabel) if w.property("form_label")]
+    if not labels:
+        return
+    width = max(lab.sizeHint().width() for lab in labels) + pad
+    for lab in labels:
+        lab.setFixedWidth(width)
 
 
 def section_title(text: str) -> QLabel:
@@ -745,6 +763,7 @@ class SettingsPage(Page):
         dl.addWidget(self.logs_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.root.addWidget(data)
         self.root.addStretch(1)
+        align_form_labels(self)  # one shared label column, whatever the font measures
         self._preview_max_mb = s.preview_max_mb
         self.load(s)
         self.proxy_btn.clicked.connect(open_proxy)

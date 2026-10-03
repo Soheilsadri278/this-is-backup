@@ -12,6 +12,7 @@ import time
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
+from PySide6.QtGui import QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QComboBox,
@@ -117,12 +118,21 @@ def test_no_control_overflows_its_card(qapp, ctl, win):
 
 
 def test_labels_are_readable_not_clipped(qapp, ctl, win):
+    """Measured against the label's OWN font, so it holds on Linux, Windows and any DPI.
+
+    A hard-coded pixel height does not travel: the same label is 14 px tall with the Linux default
+    font and 13 px with Segoe UI, and neither number says whether the text is actually clipped.
+    """
     page = win.page_widgets["Settings"]
     for lab in page.findChildren(QLabel):
         if not lab.text() or not lab.isVisible():
             continue
-        assert lab.height() >= 14, f"label {lab.text()[:30]!r} is only {lab.height()}px tall"
-        assert lab.width() >= 60, f"label {lab.text()[:30]!r} is only {lab.width()}px wide"
+        text = lab.text()[:30]
+        fm = QFontMetrics(lab.font())
+        assert lab.height() >= fm.height() - 1, f"label {text!r}: {lab.height()}px tall, one line needs {fm.height()}px"
+        if not lab.wordWrap():  # a wrapping label is *meant* to be narrower than its text
+            needed = fm.horizontalAdvance(lab.text())
+            assert lab.width() >= needed - 2, f"label {text!r}: {lab.width()}px wide, its text needs {needed}px"
 
 
 def test_form_controls_line_up_in_one_column(qapp, ctl, win):
