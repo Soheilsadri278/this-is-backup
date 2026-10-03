@@ -21,10 +21,10 @@
 #     another PC therefore starts Teloude signed out - that is the intended security behaviour, not
 #     a bug, and we never downgrade it to plaintext to make the folder "more portable".
 #   * data\ ships empty on purpose: never copy an existing %LOCALAPPDATA%\Teloude into a release.
+param([switch]$Zip)
+
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
-
-param([switch]$Zip)
 
 $Version = "1.0.0"
 $AppDir   = "dist\Teloude"                 # produced by PyInstaller (installer\teloude.spec)
@@ -110,5 +110,6 @@ if ($Zip) {
     Write-Host "Zip: $zip"
 }
 
-& (Join-Path ".venv\Scripts\python.exe") scripts\portable_verify.py --root $OutApp
+$py = if (Test-Path ".venv\Scripts\python.exe") { ".venv\Scripts\python.exe" } else { "python" }
+& $py scripts\portable_verify.py --root $OutApp
 Write-Host "Portable build: $OutApp"

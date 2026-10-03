@@ -1,10 +1,10 @@
 # Build Teloude for Windows: venv -> tests -> icon -> PyInstaller -> Inno Setup -> verification.
-# Requirements: Python 3.12+, Inno Setup 6 (iscc.exe on PATH or in the default install dir).
+# Requirements: Python 3.11+, Inno Setup 6 (iscc.exe on PATH or in the default install dir).
 # Optional:    -Portable also produces dist\Teloude-Portable\ (see scripts\build_portable.ps1).
+param([switch]$Portable)
+
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
-
-param([switch]$Portable)
 
 python -m venv .venv
 .\.venv\Scripts\python -m pip install --upgrade pip
@@ -29,6 +29,9 @@ Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+if (-not (Test-Path $iscc)) {
+    throw "Inno Setup 6 not found (iscc.exe). Install it with:  winget install -e --id JRSoftware.InnoSetup"
+}
 & $iscc installer\teloude.iss
 
 .\.venv\Scripts\python scripts\windows_verify.py --exe dist\Teloude\Teloude.exe --installer dist\Teloude-Setup-1.0.0.exe
